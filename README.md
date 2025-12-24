@@ -8,7 +8,7 @@ A production-ready **FastAPI-based Invoice Processing API** that extracts struct
 
 - 📤 Upload invoice images (`png`, `jpg`, `jpeg`)
 - 🔍 OCR text extraction using **Tesseract**
-- 🧠 Intelligent field extraction via **Ollama (Qwen 2.5 7B)**
+- 🧠 Intelligent field extraction via **Ollama (Qwen 2.5 3B)**
 - 📦 Stores invoices & extracted fields in **MongoDB**
 - ⚡ FastAPI with auto-generated Swagger docs
 - 🐳 Docker & Docker Compose support
@@ -22,7 +22,8 @@ A production-ready **FastAPI-based Invoice Processing API** that extracts struct
 invoice-api/
 ├── app/
 │   ├── main.py
-│   ├── routers/
+│   ├── config/
+|   ├── routers/
 │   ├── services/
 │   ├── db/
 │   └── utils/
@@ -31,6 +32,7 @@ invoice-api/
 ├── docker-compose.yml
 ├── requirements.txt
 ├── .env.example
+├── run.py
 └── README.md
 ```
 
@@ -77,7 +79,7 @@ docker compose up --build
 
 Ensure Ollama model is available:
 ```bash
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen2.5:3b-instruct
 ```
 
 ---
@@ -88,6 +90,7 @@ ollama pull qwen2.5:7b-instruct
 python test_ocr.py
 python test_ollama.py
 python test_mongo.py
+python test_config.py
 ```
 
 ---

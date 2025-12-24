@@ -1,89 +1,30 @@
-import os
-from bson import ObjectId
-from datetime import datetime, timezone
 from fastapi import APIRouter, UploadFile, File, HTTPException
-
-# ----------- File Imports -----------
-
-from app.db.mongo import invoices_col
-from app.services.ocr import run_ocr
-from app.services.llm import extract_invoice_fields
-from app.utils.json_guard import safe_json_load
-
-# --------------------------------------------
-
+from app.services.invoice_pipeline import (
+    process_upload, get_invoice, list_invoices, reprocess_invoice  # , remove_invoice
+)
 router = APIRouter()
 
-UPLOAD_DIR = "invoices"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-# ----------- Allowed File Types -----------
-
 ALLOWED = {"image/png", "image/jpeg", "image/jpg"}
-
-# ----------- Upload Router -----------
 
 @router.post("/upload")
 async def upload_invoice(file: UploadFile = File(...)):
     if file.content_type not in ALLOWED:
         raise HTTPException(status_code=400, detail="Only png/jpg/jpeg supported")
+    return await process_upload(file)
 
-    # ----------- Save File -----------
+@router.get("/")
+def invoices_list(limit: int = 20):
+    return list_invoices(limit)
 
-    invoice_id = str(ObjectId())
+@router.get("/{invoice_id}")
+def invoice_detail(invoice_id: str):
+    return get_invoice(invoice_id)
 
-    ext = ".png" if file.content_type == "image/png" else ".jpg"
-    
-    path = os.path.join(UPLOAD_DIR, f"{invoice_id}{ext}")
+@router.post("/{invoice_id}/reprocess")
+def invoice_reprocess(invoice_id: str):
+    return reprocess_invoice(invoice_id)
 
-    content = await file.read()
-    with open(path, "wb") as f:
-        f.write(content)
+# @router.delete("/{invoice_id}")
+# def delete_invoice(invoice_id: str):
+#     return remove_invoice(invoice_id)
 
-    # ----------- OCR -----------
-
-    ocr_text = run_ocr(path)
-
-   # ----------- LLM -----------
-
-    fields_raw = extract_invoice_fields(ocr_text)
-    fields = fields_raw if isinstance(fields_raw, dict) else safe_json_load(fields_raw)
-
-#     invoices_col.update_one(
-#         {"_id": res.inserted_id},
-#         {
-#             "$set": {
-#                 "fields": fields,
-#                 "status": "fields_extracted"
-#             }
-#         }
-# )
-
-    # ----------- Store Metadata in Mongo DB -----------
-
-    doc = {
-        "_id": invoice_id,
-        "file_name": file.filename,
-        "content_type": file.content_type,
-        "file_path": path,
-        "status": "uploaded, 200, OK",
-        "created_at": datetime.now(timezone.utc),
-        "ocr_text": ocr_text,
-        "fields": fields,
-        # "fields": {
-        #     "supplier_name": None,
-        #     "customer_name": None,
-        #     "invoice_date": None,
-        #     "total_amount": None,
-        # },
-    }
-
-    res = invoices_col.insert_one(doc)
-
-    return {
-            "invoice_id": str(res.inserted_id), 
-            "status 1": "Uploaded & OCR done",
-            "ocr_preview": ocr_text[:300],
-            "status 2": "Fields_extracted",
-            "fields": fields,
-            }

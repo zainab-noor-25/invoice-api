@@ -1,6 +1,14 @@
+# Python
 venv/
 .venv/
 __pycache__/
 *.pyc
+
+# Environment
 .env
+
+# Runtime data
 invoices/
+
+# Project notes
+Invoice Intelligence Platform Project RoadMap.txt

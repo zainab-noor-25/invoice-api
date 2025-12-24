@@ -2,10 +2,14 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from app.config.config import settings
 from app.routers.invoices import router as invoices_router
+from app.utils.errors import RequestIdMiddleware, global_exception_handler
 
 # --------------------------------------------
 
 app = FastAPI(title=settings.APP_NAME)
+
+app.add_middleware(RequestIdMiddleware)
+app.add_exception_handler(Exception, global_exception_handler)
 
 # ----------- Settings from Config -----------
 
@@ -14,7 +18,6 @@ TOP_K_DEFAULT = settings.TOP_K
 MAX_RETRIES = settings.MAX_RETRIES
 ALLOW_ORIGINS = settings.allow_origins_list
 
-
 # ----------- Invoice Router -----------
 
 app.include_router(invoices_router, prefix="/invoices", tags=["Invoices"])
@@ -22,9 +25,8 @@ app.include_router(invoices_router, prefix="/invoices", tags=["Invoices"])
 # ----------- / -----------
 
 @app.get("/", response_class=PlainTextResponse)
-def home():
+def root():
     return "------ WELCOME to Invoice API ------ Hit /docs ------"
-
 
 # ----------- /health -----------
 

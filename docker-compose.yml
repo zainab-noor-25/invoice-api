@@ -6,5 +6,16 @@ services:
     volumes:
       - mongo_data:/data/db
 
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: invoice_mongo_express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_BASICAUTH: false
+    depends_on:
+      - mongo
+
 volumes:
   mongo_data:
