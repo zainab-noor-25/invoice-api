@@ -1,19 +1,29 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel
 from typing import Optional, Literal, List
 from datetime import datetime
-from bson import ObjectId
+
+# ---------------------------------------- 
+
+# ---------- Invoice Fields ---------- 
 
 class InvoiceFields(BaseModel):
     supplier_name: Optional[str] = None
     customer_name: Optional[str] = None
-    invoice_date: Optional[str] = None
+    
+    date_issued: Optional[str] = None
+    due_date: Optional[str] = None
+    
     total_amount: Optional[float] = None
+
+# ---------- Upload Response Fields ---------- 
 
 class UploadResponse(BaseModel):
     invoice_id: str
     status: str
     ocr_preview: str
     fields: Optional[InvoiceFields] = None
+
+# ---------- Invoice Response Fields ----------     
 
 class InvoiceResponse(BaseModel):
     invoice_id: str
@@ -23,6 +33,8 @@ class InvoiceResponse(BaseModel):
     created_at: datetime
     fields: Optional[InvoiceFields] = None
     ocr_preview: Optional[str] = None
+
+# ---------- Listing Fields ---------- 
 
 class ListResponse(BaseModel):
     items: List[InvoiceResponse]

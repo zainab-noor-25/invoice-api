@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     APP_HOST: str = "127.0.0.1"
     APP_PORT: int = int(os.getenv("APP_PORT", "8001"))
-    ALLOW_ORIGINS: str = ""
+    ALLOW_ORIGINS: str = os.getenv("ALLOW_ORIGINS", "")
 
     # ---------- MongoDB Atlas ----------
 
@@ -31,8 +31,8 @@ class Settings(BaseSettings):
 
     # ---------- Embeddings ----------
 
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    EMBEDDING_DIM: int = 384
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+    EMBEDDING_DIM: int = 768
 
     # ---------- LLM Model ----------
 

@@ -3,22 +3,26 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from fastapi import UploadFile, HTTPException
 
-from app.db.mongo import invoices_col
-from app.services.ocr import run_ocr
-from app.services.llm import extract_invoice_fields
-from app.utils.json_guard import safe_json_load
+from app.db.mongo import invoices_col, chunks_col
 from app.utils.schemas import InvoiceFields
+from app.graphs.graph import GRAPH
+
+# ---------------------------------------- 
 
 UPLOAD_DIR = "invoices"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# ----------------------------------------
+
 ALLOWED = {"image/png", "image/jpeg", "image/jpg"}
 
+# ---------- Path Def ----------
 
 def _build_path(invoice_id: str, content_type: str) -> str:
     ext = ".png" if content_type == "image/png" else ".jpg"
     return os.path.join(UPLOAD_DIR, f"{invoice_id}{ext}")
 
+# ---------- Upload ----------
 
 async def process_upload(file: UploadFile):
     if file.content_type not in ALLOWED:
@@ -33,37 +37,63 @@ async def process_upload(file: UploadFile):
     with open(path, "wb") as f:
         f.write(content)
 
-    # OCR
-    ocr_text = run_ocr(path)
-
-    # LLM
-    fields_raw = extract_invoice_fields(ocr_text)
-    fields_dict = fields_raw if isinstance(fields_raw, dict) else safe_json_load(fields_raw)
-
-    # Pydantic validation
-    fields_obj = InvoiceFields(**fields_dict)
-    fields = fields_obj.model_dump()
-
-    doc = {
+    # 1) Insert initial invoice doc (processing)
+    invoices_col.insert_one({
         "_id": invoice_oid,
         "file_name": file.filename,
         "content_type": file.content_type,
         "file_path": path,
-        "status": "fields_extracted",
+        "status": "processing",
         "created_at": datetime.now(timezone.utc),
-        "ocr_text": ocr_text,
-        "fields": fields,
-    }
+    })
 
-    invoices_col.insert_one(doc)
+    # 2) Run LangGraph pipeline (OCR + LLM + Chunk+Embed)
+    try:
+        result = GRAPH.invoke({"file_path": path, "invoice_id": invoice_id})
+    except Exception as e:
+        invoices_col.update_one(
+            {"_id": invoice_oid},
+            {"$set": {"status": "error", "error": str(e), "updated_at": datetime.now(timezone.utc)}},
+        )
+        raise HTTPException(status_code=500, detail=f"Pipeline crashed: {e}")
+
+
+    # 3) Handle pipeline error
+    if result.get("error"):
+        invoices_col.update_one(
+            {"_id": invoice_oid},
+            {"$set": {"status": "error", "error": result["error"], "updated_at": datetime.now(timezone.utc)}},
+        )
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    ocr_text = result.get("ocr_text") or ""
+    fields_raw = result.get("fields") or {}
+
+    # 4) Pydantic validation
+    fields_obj = InvoiceFields(**fields_raw)
+    fields = fields_obj.model_dump()
+
+    # 5) Update invoice doc with outputs
+    invoices_col.update_one(
+        {"_id": invoice_oid},
+        {"$set": {
+            "status": "fields_extracted",
+            "ocr_text": ocr_text,
+            "fields": fields,
+            "chunks_inserted": result.get("chunks_inserted", 0),
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
 
     return {
         "invoice_id": invoice_id,
         "status": "fields_extracted",
         "ocr_preview": ocr_text[:300],
         "fields": fields,
+        "chunks_inserted": result.get("chunks_inserted", 0),
     }
 
+# ---------- List All---------- 
 
 def list_invoices(limit: int = 20):
     cur = invoices_col.find({}, {"ocr_text": 0}).sort("created_at", -1).limit(limit)
@@ -73,6 +103,7 @@ def list_invoices(limit: int = 20):
         items.append(d)
     return {"items": items}
 
+# ---------- Get by ID ----------
 
 def get_invoice(invoice_id: str):
     try:
@@ -87,29 +118,60 @@ def get_invoice(invoice_id: str):
     d["invoice_id"] = str(d.pop("_id"))
     return d
 
+# ---------- Reprocessing Same Invoice ----------
 
 def reprocess_invoice(invoice_id: str):
     inv = get_invoice(invoice_id)
     path = inv["file_path"]
 
-    ocr_text = run_ocr(path)
+    # delete old chunks to avoid duplicacy
+    chunks_col.delete_many({"invoice_id": invoice_id})
 
-    fields_raw = extract_invoice_fields(ocr_text)
-    fields_dict = fields_raw if isinstance(fields_raw, dict) else safe_json_load(fields_raw)
+    # update invoice status
+    invoices_col.update_one(
+        {"_id": ObjectId(invoice_id)},
+        {"$set": {"status": "reprocessing", "updated_at": datetime.now(timezone.utc)}},
+    )
 
-    fields_obj = InvoiceFields(**fields_dict)
+    try:
+        result = GRAPH.invoke({"file_path": path, "invoice_id": invoice_id})
+
+    except Exception as e:
+        invoices_col.update_one(
+            {"_id": ObjectId(invoice_id)},
+            {"$set": {"status": "error", "error": str(e), "updated_at": datetime.now(timezone.utc)}},
+        )
+        raise HTTPException(status_code=500, detail=f"Pipeline crashed: {e}")
+    
+    # For error
+    if result.get("error"):
+        invoices_col.update_one(
+            {"_id": ObjectId(invoice_id)},
+            {"$set": {"status": "error", "error": result["error"], "updated_at": datetime.now(timezone.utc)}},
+        )
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    ocr_text = result.get("ocr_text") or ""
+    fields_raw = result.get("fields") or {}
+
+    fields_obj = InvoiceFields(**fields_raw)
     fields = fields_obj.model_dump()
 
     invoices_col.update_one(
         {"_id": ObjectId(invoice_id)},
-        {
-            "$set": {
-                "ocr_text": ocr_text,
-                "fields": fields,
-                "status": "fields_extracted",
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
+        {"$set": {
+            "ocr_text": ocr_text,
+            "fields": fields,
+            "status": "fields_extracted",
+            "chunks_inserted": result.get("chunks_inserted", 0),
+            "updated_at": datetime.now(timezone.utc),
+        }},
     )
 
-    return {"invoice_id": invoice_id, "status": "fields_extracted", "fields": fields}
+    return {
+        "invoice_id": invoice_id,
+        "status": "fields_extracted",
+        "fields": fields,
+        "chunks_inserted": result.get("chunks_inserted", 0),
+    }
+

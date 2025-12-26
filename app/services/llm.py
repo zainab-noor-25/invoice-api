@@ -1,27 +1,26 @@
 import json
 import httpx
+
 from app.config.config import settings
+from app.prompts.llm_prompts import llm_prompt
+
+from app.fallback.missing import guess_customer_from_ocr
+from app.fallback.pruner import prune_ocr_text
+from app.fallback.dates import guess_dates_from_ocr
 
 # --------------------------------------------
 
 # ----------- Text Extraction -----------
 
 def extract_invoice_fields(ocr_text: str) -> dict:
-    prompt = f"""
-Extract invoice fields from OCR text.
-Return ONLY valid JSON. No explanations.
+    
+    prompt = f""" 
+        {llm_prompt}
 
-Fields:
-- supplier_name
-- customer_name
-- invoice_date (YYYY-MM-DD)
-- total_amount (number only)
+    OCR TEXT:
+        {prune_ocr_text(ocr_text)}
 
-Use null if missing.
-
-OCR TEXT:
-{ocr_text[:1500]}
-""".strip()
+    """.strip()
 
     payload = {
         "model": settings.CHAT_MODEL,  # e.g. qwen3:4b or qwen2.5:7b-instruct
@@ -31,8 +30,8 @@ OCR TEXT:
         ],
         "stream": False,
         "options": {"temperature": 0, 
-                    "num_predict": 120,
-                    "num_ctx": 2048},
+                    "num_predict": 80,
+                    "num_ctx": 1024},
     }
 
     url = settings.OLLAMA_BASE_URL.rstrip("/") + "/api/chat"
@@ -42,14 +41,48 @@ OCR TEXT:
 
     raw = r.json()["message"]["content"].strip()
 
-    import time
-    t0 = time.time()
-    print(">> POST", url)
-    r = httpx.post(url, json=payload, timeout=600)
-    print(">> DONE in", round(time.time() - t0, 2), "sec")
-
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
+
+        # -------- Date Fallbacks --------
+        issued, due = guess_dates_from_ocr(ocr_text)
+
+        if not data.get("date_issued") and issued:
+            data["date_issued"] = issued
+
+        if not data.get("due_date") and due:
+            data["due_date"] = due
+
+
+        # -------- Fallback for customer_name --------
+        if not data.get("customer_name"):
+            guess = guess_customer_from_ocr(ocr_text)
+            if guess:
+                data["customer_name"] = guess
+
+        return data
+
     except json.JSONDecodeError:
         return {"error": "Model did not return valid JSON", "raw": raw[:800]}
+
+
+# ----------- Context Q/A --> Chat Bot -----------
+
+def answer_from_context(prompt: str) -> str:
+    payload = {
+        "model": settings.CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": "Answer using only the given context."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 200},
+    }
+
+    url = settings.OLLAMA_BASE_URL.rstrip("/") + "/api/chat"
+    r = httpx.post(url, json=payload, timeout=300)
+    r.raise_for_status()
+
+    return r.json()["message"]["content"].strip()
+
 
