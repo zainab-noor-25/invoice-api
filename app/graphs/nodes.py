@@ -1,7 +1,7 @@
 import time
-from typing import TypedDict, Optional
 
 from app.db.mongo import chunks_col
+from app.graphs.schema import GraphState
 
 from app.services.ocr import run_ocr
 from app.services.llm import extract_invoice_fields
@@ -10,24 +10,23 @@ from app.services.embeddings import embed_text
 
 # ----------------------------------------
 
-# ---------- Defination ----------
-
-class GraphState(TypedDict):
-    file_path: str
-    invoice_id: str
-    ocr_text: Optional[str]
-    fields: Optional[dict]
-    error: Optional[str]
-    chunks_inserted: Optional[int]
-
 # ---------- OCR ----------
 
 def step_ocr(state: GraphState) -> GraphState:
     try:
-        state["ocr_text"] = run_ocr(state["file_path"])
+        ocr_out = run_ocr(state["file_path"])
+
+        state["ocr_text"] = ocr_out.get("best_text", "")
+        state["ocr_raw"] = ocr_out.get("raw_text", "")
+        state["ocr_processed"] = ocr_out.get("processed_text", "")
+
+        state["processed_image_path"] = ocr_out.get("processed_image_path")
+        state["latest_image_path"] = ocr_out.get("latest_image_path")
+
     except Exception as e:
         state["error"] = f"OCR failed: {e}"
     return state
+
 
 # ---------- Extraction ----------
 
@@ -37,7 +36,7 @@ def step_extract(state: GraphState) -> GraphState:
     
     try:
         t0 = time.time()
-        out = extract_invoice_fields(state.get("ocr_text") or "")
+        out = extract_invoice_fields(state.get("ocr_text") or "", state.get("ocr_raw") or "")
         print("extract: done in", round(time.time() - t0, 2), "sec")
         state["fields"] = out if isinstance(out, dict) else {}
 

@@ -6,6 +6,7 @@ from fastapi import UploadFile, HTTPException
 from app.db.mongo import invoices_col, chunks_col
 from app.utils.schemas import InvoiceFields
 from app.graphs.graph import GRAPH
+from app.fallback.dates import normalize_date
 
 # ---------------------------------------- 
 
@@ -57,7 +58,6 @@ async def process_upload(file: UploadFile):
         )
         raise HTTPException(status_code=500, detail=f"Pipeline crashed: {e}")
 
-
     # 3) Handle pipeline error
     if result.get("error"):
         invoices_col.update_one(
@@ -73,6 +73,10 @@ async def process_upload(file: UploadFile):
     fields_obj = InvoiceFields(**fields_raw)
     fields = fields_obj.model_dump()
 
+    # normalize dates (optional but good)
+    fields["date_issued"] = normalize_date(fields.get("date_issued"))
+    fields["due_date"] = normalize_date(fields.get("due_date"))
+
     # 5) Update invoice doc with outputs
     invoices_col.update_one(
         {"_id": invoice_oid},
@@ -81,6 +85,8 @@ async def process_upload(file: UploadFile):
             "ocr_text": ocr_text,
             "fields": fields,
             "chunks_inserted": result.get("chunks_inserted", 0),
+            "processed_image_path": result.get("processed_image_path"),
+            "latest_image_path": result.get("latest_image_path"),
             "updated_at": datetime.now(timezone.utc),
         }},
     )
@@ -91,6 +97,8 @@ async def process_upload(file: UploadFile):
         "ocr_preview": ocr_text[:300],
         "fields": fields,
         "chunks_inserted": result.get("chunks_inserted", 0),
+        "processed_image_path": result.get("processed_image_path"),
+        "latest_image_path": result.get("latest_image_path"),
     }
 
 # ---------- List All---------- 
@@ -135,14 +143,13 @@ def reprocess_invoice(invoice_id: str):
 
     try:
         result = GRAPH.invoke({"file_path": path, "invoice_id": invoice_id})
-
     except Exception as e:
         invoices_col.update_one(
             {"_id": ObjectId(invoice_id)},
             {"$set": {"status": "error", "error": str(e), "updated_at": datetime.now(timezone.utc)}},
         )
         raise HTTPException(status_code=500, detail=f"Pipeline crashed: {e}")
-    
+
     # For error
     if result.get("error"):
         invoices_col.update_one(
@@ -152,18 +159,27 @@ def reprocess_invoice(invoice_id: str):
         raise HTTPException(status_code=500, detail=result["error"])
 
     ocr_text = result.get("ocr_text") or ""
+    ocr_raw = result.get("ocr_raw") or ""
+    ocr_processed = result.get("ocr_processed") or ""
     fields_raw = result.get("fields") or {}
 
     fields_obj = InvoiceFields(**fields_raw)
     fields = fields_obj.model_dump()
 
+    fields["date_issued"] = normalize_date(fields.get("date_issued"))
+    fields["due_date"] = normalize_date(fields.get("due_date"))
+
     invoices_col.update_one(
         {"_id": ObjectId(invoice_id)},
         {"$set": {
             "ocr_text": ocr_text,
+            "ocr_raw": ocr_raw,
+            "ocr_processed": ocr_processed,
             "fields": fields,
             "status": "fields_extracted",
             "chunks_inserted": result.get("chunks_inserted", 0),
+            "processed_image_path": result.get("processed_image_path"),
+            "latest_image_path": result.get("latest_image_path"),
             "updated_at": datetime.now(timezone.utc),
         }},
     )
@@ -173,5 +189,6 @@ def reprocess_invoice(invoice_id: str):
         "status": "fields_extracted",
         "fields": fields,
         "chunks_inserted": result.get("chunks_inserted", 0),
+        "processed_image_path": result.get("processed_image_path"),
+        "latest_image_path": result.get("latest_image_path"),
     }
-

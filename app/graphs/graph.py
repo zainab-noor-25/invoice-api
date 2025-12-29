@@ -1,6 +1,7 @@
 
 from langgraph.graph import StateGraph, END
-from app.graphs.nodes import GraphState, step_ocr, step_extract, step_chunk_embed, router
+from app.graphs.schema import GraphState
+from app.graphs.nodes import step_ocr, step_extract, step_chunk_embed, router
 
 # ----------------------------------------
 
