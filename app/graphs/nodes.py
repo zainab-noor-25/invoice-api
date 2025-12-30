@@ -1,6 +1,6 @@
 import time
 
-from app.db.mongo import chunks_col
+from app.db.vectordb import get_index
 from app.graphs.schema import GraphState
 
 from app.services.ocr import run_ocr
@@ -12,17 +12,14 @@ from app.services.embeddings import embed_text
 
 # ---------- OCR ----------
 
-def step_ocr(state: GraphState) -> GraphState:
+from app.services.ocr import run_ocr
+
+def step_ocr(state):
     try:
         ocr_out = run_ocr(state["file_path"])
-
         state["ocr_text"] = ocr_out.get("best_text", "")
         state["ocr_raw"] = ocr_out.get("raw_text", "")
         state["ocr_processed"] = ocr_out.get("processed_text", "")
-
-        state["processed_image_path"] = ocr_out.get("processed_image_path")
-        state["latest_image_path"] = ocr_out.get("latest_image_path")
-
     except Exception as e:
         state["error"] = f"OCR failed: {e}"
     return state
@@ -65,28 +62,30 @@ def step_chunk_embed(state: GraphState) -> GraphState:
 
         docs = []
         t0 = time.time()
-        for i, c in enumerate(chunks):   
-            if i == 0:
-                print(f"chunk_embed: embedding chunk {i+1}/{len(chunks)}")
-            
-            emb = embed_text(c["text"])
-            
-            docs.append({
-                "invoice_id": state["invoice_id"],
-                "chunk_id": c["chunk_id"],
-                "text": c["text"],
-                "embedding": emb,
-                "meta": c["meta"],
-            })
 
-        print("chunk_embed: embeddings done, inserting", len(docs), round(time.time() - t0, 2), "sec")
-        
-        if docs:
-            chunks_col.insert_many(docs)
-        
-        print("chunk_embed: insert done")
-        
-        state["chunks_inserted"] = len(docs)
+        index = get_index()
+        vectors = []
+
+        for c in chunks:
+            emb = embed_text(c["text"])
+
+            vid = f"{state['invoice_id']}::{c['chunk_id']}"
+
+            vectors.append((
+                vid,
+                emb,
+                {
+                    "invoice_id": state["invoice_id"],
+                    "chunk_id": c["chunk_id"],
+                    "text": c["text"],
+                    **(c.get("meta") or {}),
+                }
+            ))
+
+        if vectors:
+            index.upsert(vectors=vectors)
+
+        state["chunks_inserted"] = len(vectors)
 
     except Exception as e:
         state["error"] = f"Chunk/Embed failed: {type(e).__name__}: {e}"

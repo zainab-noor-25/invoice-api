@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     LANGCHAIN_API_KEY: str | None = None
     LANGCHAIN_PROJECT: str | None = None
 
+    # ---------- Pinecone ----------
+
+    PINECONE_API_KEY: str | None = None
+    PINECONE_INDEX: str | None = None
+    PINECONE_HOST: str | None = None
+    PINECONE_NAMESPACE: str = "invoices"
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

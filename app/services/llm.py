@@ -10,24 +10,36 @@ from app.fallback.pruner import prune_ocr_text
 from app.fallback.dates import guess_dates_from_ocr
 from app.fallback.guard import guard_llm_output
 from app.fallback.totals import guess_total_from_ocr
-from app.fallback.quality import is_low_quality_ocr
-from app.fallback.grounding import ground_fields, should_skip_llm
+from app.fallback.quality import is_low_quality_ocr  # ✅ keep quality
 
 
 # --------------------------------------------
-
 # ----------- Text Extraction -----------
+# --------------------------------------------
 
 def extract_invoice_fields(ocr_text: str, ocr_raw: str = "") -> dict:
 
-    # Use raw if available (often better for dates/totals), otherwise best_text
-    source_text = ocr_raw or ocr_text
-    source_text = source_text or ""
+    """
+    Strategy:
+    1) Prefer raw OCR when available
+    2) If OCR is very poor → skip LLM, use heuristics only
+    3) Else → LLM extraction + controlled fallbacks
+    """
+    source_text = (ocr_raw or ocr_text or "").strip()
 
-    # ✅ HARD STOP: if OCR is garbage, don't call LLM (prevents hallucinations)
-    # (you can choose either function; keep both for safety)
-    if should_skip_llm(source_text) or is_low_quality_ocr(source_text):
-        # still try regex fallbacks even if LLM skipped
+    # If OCR empty
+    if not source_text:
+        return {
+            "supplier_name": None,
+            "customer_name": None,
+            "date_issued": None,
+            "due_date": None,
+            "total_amount": None,
+            "warning": "Empty OCR text"
+        }
+
+    # ---------- If OCR is too noisy → skip LLM ----------
+    if is_low_quality_ocr(source_text):
         issued, due = guess_dates_from_ocr(source_text)
         tot = guess_total_from_ocr(source_text)
         cust = guess_customer_from_ocr(source_text)
@@ -37,28 +49,29 @@ def extract_invoice_fields(ocr_text: str, ocr_raw: str = "") -> dict:
             "customer_name": cust if cust else None,
             "date_issued": issued if issued else None,
             "due_date": due if due else None,
-            "total_amount": tot if tot else None,
+            "total_amount": tot if tot is not None else None,
             "warning": "OCR too noisy, skipped LLM extraction"
         }
 
+    # ---------- LLM Extraction ----------
     prompt = f"""
-        {llm_prompt}
+{llm_prompt}
 
-    OCR TEXT:
-        {prune_ocr_text(source_text)}
-    """.strip()
+OCR TEXT:
+{prune_ocr_text(source_text)}
+""".strip()
 
     payload = {
         "model": settings.CHAT_MODEL,
         "messages": [
-            {"role": "system", "content": "You output only valid JSON. No extra text."},
-            {"role": "user", "content": prompt[:1200]},
+            {"role": "system", "content": "Output must only be valid JSON. No extra text."},
+            {"role": "user", "content": prompt[:1600]},
         ],
         "stream": False,
         "options": {
             "temperature": 0,
-            "num_predict": 120,   # slightly higher to avoid cutting JSON
-            "num_ctx": 2048       # more context reduces guessing
+            "num_predict": 160,  # higher so JSON doesn’t cut
+            "num_ctx": 2048
         },
     }
 
@@ -67,43 +80,55 @@ def extract_invoice_fields(ocr_text: str, ocr_raw: str = "") -> dict:
     r = httpx.post(url, json=payload, timeout=600)
     r.raise_for_status()
 
-    raw = r.json()["message"]["content"].strip()
+    raw = (r.json().get("message", {}).get("content") or "").strip()
 
     try:
         data = json.loads(raw)
 
-        # -------- Date Fallbacks --------
-        issued, due = guess_dates_from_ocr(source_text)
-
-        if not data.get("date_issued") and issued:
-            data["date_issued"] = issued
-
-        if not data.get("due_date") and due:
-            data["due_date"] = due
-
-        # -------- Fallback for customer_name --------
-        if not data.get("customer_name"):
-            guess = guess_customer_from_ocr(source_text)
-            if guess:
-                data["customer_name"] = guess
-
-        # -------- Fallback for total_amount --------
-        # NOTE: total_amount can be 0.0 so check "is None" not "not data.get"
-        if data.get("total_amount") is None:
-            tot = guess_total_from_ocr(source_text)
-            if tot is not None:
-                data["total_amount"] = tot
-
-        # -------- Guard Hallucinations (your existing guard) --------
-        data = guard_llm_output(data, source_text)
-
-        # ✅ FINAL: grounding - drop any supplier/customer/total not found in OCR text
-        data = ground_fields(data, source_text)
-
-        return data
-
     except json.JSONDecodeError:
-        return {"error": "Model did not return valid JSON", "raw": raw[:800]}
+        # If model breaks JSON → fallback to heuristics
+        issued, due = guess_dates_from_ocr(source_text)
+        tot = guess_total_from_ocr(source_text)
+        cust = guess_customer_from_ocr(source_text)
+
+        return {
+            "supplier_name": None,
+            "customer_name": cust if cust else None,
+            "date_issued": issued if issued else None,
+            "due_date": due if due else None,
+            "total_amount": tot if tot is not None else None,
+            "warning": "Model did not return valid JSON (fallback used)"
+        }
+
+# ------------------------------------
+# FALLBACKS (ONLY IF MISSING)
+# ------------------------------------
+
+    # -------- Date Fallbacks --------
+    issued, due = guess_dates_from_ocr(source_text)
+
+    if not data.get("date_issued") and issued:
+        data["date_issued"] = issued
+
+    if not data.get("due_date") and due:
+        data["due_date"] = due
+
+    # -------- Fallback for customer_name --------
+    if not data.get("customer_name"):
+        cust = guess_customer_from_ocr(source_text)
+        if cust:
+            data["customer_name"] = cust
+
+    # -------- Fallback for total_amount --------
+    if data.get("total_amount") is None:
+        tot = guess_total_from_ocr(source_text)
+        if tot is not None:
+            data["total_amount"] = tot
+
+    # -------- Guard Hallucinations (your existing guard) --------
+    data = guard_llm_output(data, source_text)
+
+    return data
 
 
 # ----------- Context Q/A --> Chat Bot -----------
@@ -112,7 +137,7 @@ def answer_from_context(prompt: str) -> str:
     payload = {
         "model": settings.CHAT_MODEL,
         "messages": [
-            {"role": "system", "content": "Answer using only the given context."},
+            {"role": "system", "content": "Answer must use the given context only."},
             {"role": "user", "content": prompt},
         ],
         "stream": False,

@@ -1,5 +1,5 @@
 import re
-from typing import Optional, Tuple
+from typing import Optional
 from datetime import datetime
 
 # ---------------------------------------- 
@@ -43,8 +43,9 @@ def guess_dates_from_ocr(text: str):
 def normalize_date(date_str: Optional[str]) -> Optional[str]:
     if not date_str:
         return None
+    
     try:
-        # expects DD-MM-YYYY
         return datetime.strptime(date_str, "%d-%m-%Y").strftime("%Y-%m-%d")
+    
     except Exception:
-        return date_str  # fallback: keep original
+        return date_str

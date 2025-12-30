@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException
 from bson import ObjectId
 
-from app.db.mongo import invoices_col
+from app.db.mongodb import invoices_col
 from app.services.embeddings import embed_text
-from app.services.retrieval import retrieve_chunks_local
+from app.services.retrieval import retrieve_chunks
 from app.services.llm import answer_from_context
 
 router = APIRouter()
@@ -15,15 +15,24 @@ FIELD_ALIASES = {
 
     "customer name": "customer_name",
     "customer_name": "customer_name",
+    "client name": "customer_name",
 
-    "invoice date": "invoice_date",
-    "invoice_date": "invoice_date",
-    "date": "invoice_date",
+    "invoice date": "date_issued",
+    "issue date": "date_issued",
+    "date issued": "date_issued",
+    "date_issued": "date_issued",
+
+    "due date": "due_date",
+    "payment due": "due_date",
+    "due_date": "due_date",
 
     "total amount": "total_amount",
     "total_amount": "total_amount",
     "total": "total_amount",
+    "grand total": "total_amount",
+    "total due": "total_amount",
 }
+
 
 @router.post("/chat")
 def chat(invoice_id: str, question: str):
@@ -52,8 +61,7 @@ def chat(invoice_id: str, question: str):
         }
 
     # 3) Otherwise do chunk-based RAG
-    q_emb = embed_text(question)
-    hits = retrieve_chunks_local(invoice_id, q_emb)
+    hits = retrieve_chunks(invoice_id, question)
 
     if not hits:
         return {"answer": "Sorry, I did not find it in provided context.", "used_chunks": []}
